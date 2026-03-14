@@ -1,0 +1,19 @@
+project:
+  name: saas_churn_mlops
+
+data:
+  observation_window_days: 90
+  prediction_window_days: 30
+
+features:
+  version: v1
+
+model:
+  type: xgboost
+  max_depth: 6
+  learning_rate: 0.1
+  n_estimators: 100
+  random_state: 42
+
+training:
+  test_size: 0.2
