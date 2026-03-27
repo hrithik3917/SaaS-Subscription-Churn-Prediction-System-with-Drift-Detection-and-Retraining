@@ -33,20 +33,12 @@ engine = create_engine(DATABASE_URL)
 
 
 def test_connection():
-    """Test if we can actually reach the database."""
+    """Verify database connectivity. Returns True if reachable"""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-            print("✅ Database connection successful!")
-            print(f"   Connected to: {os.getenv('DB_NAME')} @ {os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}")
             return True
     except Exception as e:
-        print("❌ Database connection FAILED!")
-        print(f"   Error: {e}")
-        print("\n   Troubleshooting:")
-        print("   1. Is PostgreSQL running?")
-        print("   2. Does the 'saas_churn' database exist in pgAdmin?")
-        print("   3. Are your .env credentials correct?")
         return False
 
 

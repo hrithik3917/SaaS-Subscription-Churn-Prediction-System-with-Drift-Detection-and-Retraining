@@ -15,18 +15,23 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 class Config:
-    """All project configuration in one class."""
-    
+    """Centralized access to all project paths and parameters."""
+
+    # Data directories
     RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
     INTERIM_DATA_DIR = PROJECT_ROOT / "data" / "interim"
     PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
     MODELS_DIR = PROJECT_ROOT / "models"
+
+    # Configuration files
     PARAMS_PATH = PROJECT_ROOT / "configs" / "params.yaml"
+
+    # MLflow experiment tracking
     MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
     
     @classmethod
     def load_params(cls):
-        """Load and return the params.yaml configuration."""
+        """Load and return the params.yaml configuration as a dict."""
         with open(cls.PARAMS_PATH, "r") as f:
             return yaml.safe_load(f)
 
