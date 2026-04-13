@@ -26,6 +26,15 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: saas_churn
+      DB_USER: postgres
+      DB_PASSWORD: Hrithiksd@18
+      MLFLOW_TRACKING_URI: http://127.0.0.1:5000
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,7 +48,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-ci.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -62,51 +71,34 @@ jobs:
 
       - name: Create required data directories
         run: |
-          mkdir -p data/raw
           mkdir -p data/processed
           mkdir -p data/interim
           mkdir -p models
 
-      - name: Copy raw CSV files
-        run: |
-          cp data/raw/*.csv data/raw/ 2>/dev/null || true
-
       - name: Run data ingestion
-        run: |
-          python -m src.data_ingestion.load_data
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+        run: python -m src.data_ingestion.load_data
 
       - name: Run feature engineering
-        run: |
-          python -m src.feature_engineering.build_features
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+        run: python -m src.feature_engineering.build_features
 
       - name: Start MLflow server
         run: |
           mlflow server \
             --host 127.0.0.1 \
             --port 5000 \
-            --backend-store-uri sqlite:///mlflow.db &
-          sleep 5
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+            --backend-store-uri sqlite:///mlflow.db \
+            --default-artifact-root ./mlruns &
+          echo "Waiting for MLflow to start..."
+          sleep 15
+          curl --retry 5 --retry-delay 3 --retry-connrefused \
+            http://127.0.0.1:5000/api/2.0/mlflow/experiments/list \
+            -o /dev/null -s -w "MLflow status: %{http_code}\n"
 
       - name: Run model training
-        run: |
-          python -m src.training.train
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+        run: python -m src.training.train
 
       - name: Run drift detection
-        run: |
-          python -m src.drift_detection.detect_drift
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+        run: python -m src.drift_detection.detect_drift
 
       - name: Run unit tests
-        run: |
-          pytest tests/ -v --tb=short
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+        run: pytest tests/ -v --tb=short
