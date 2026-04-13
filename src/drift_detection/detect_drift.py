@@ -45,54 +45,70 @@ def load_reference_data():
     return df
 
 
-def create_simulated_new_data(reference_df, drift_fraction=0.3):
+def create_simulated_new_data(reference_df, drift_fraction=1.0):
     """
-    Simulate incoming data by modifying a portion of the reference data.
+    Simulate incoming data with clearly detectable distribution shifts.
 
-    In production, this function would be replaced by loading actual new
-    data from the database or an incoming data feed. For our capstone,
-    we simulate drift by:
-      - Taking a sample of the reference data
-      - Artificially shifting some feature distributions
+    Uses 250 rows (more statistical power) and more extreme multipliers
+    so the KS/chi-squared tests reliably detect drift.
 
-    Args:
-        reference_df: the original training data
-        drift_fraction: how much of the data to modify (0.0 to 1.0)
-
-    Returns:
-        A DataFrame that looks like "new" data with some distributional shifts.
+    In production, replace this entire function with actual new data loading.
     """
     np.random.seed(42)
     df = reference_df.drop(columns=["account_id", "churn_flag"]).copy()
 
-    # Sample 100 rows to act as "new incoming data"
-    new_data = df.sample(n=min(100, len(df)), random_state=42).copy()
+    # 250 rows gives the KS test enough power to detect the shifts
+    new_data = df.sample(n=min(250, len(df)), random_state=42).copy()
 
-    # Introduce drift in a subset of rows
     n_drift = int(len(new_data) * drift_fraction)
     drift_idx = new_data.index[:n_drift]
 
-    # Simulate: MRR drops (customers switching to cheaper plans)
+    # Simulate: severe MRR collapse (customers downgrading en masse)
     if "avg_mrr" in new_data.columns:
-        new_data.loc[drift_idx, "avg_mrr"] *= 0.4
+        new_data.loc[drift_idx, "avg_mrr"] *= 0.15
 
-    # Simulate: support ticket volume increases
+    if "max_mrr" in new_data.columns:
+        new_data.loc[drift_idx, "max_mrr"] *= 0.15
+
+    # Simulate: support ticket surge (10x normal volume)
     if "ticket_count" in new_data.columns:
-        new_data.loc[drift_idx, "ticket_count"] *= 3
+        new_data.loc[drift_idx, "ticket_count"] *= 10
 
-    # Simulate: usage drops significantly
+    if "recent_ticket_count" in new_data.columns:
+        new_data.loc[drift_idx, "recent_ticket_count"] *= 10
+
+    # Simulate: complete product disengagement
     if "total_usage_minutes" in new_data.columns:
-        new_data.loc[drift_idx, "total_usage_minutes"] *= 0.2
+        new_data.loc[drift_idx, "total_usage_minutes"] *= 0.05
 
-    # Simulate: more escalations
+    if "recent_usage_minutes" in new_data.columns:
+        new_data.loc[drift_idx, "recent_usage_minutes"] *= 0.05
+
+    if "usage_trend_ratio" in new_data.columns:
+        new_data.loc[drift_idx, "usage_trend_ratio"] *= 0.1
+
+    # Simulate: satisfaction collapse
+    if "avg_satisfaction" in new_data.columns:
+        new_data.loc[drift_idx, "avg_satisfaction"] *= 0.3
+
+    if "recent_avg_satisfaction" in new_data.columns:
+        new_data.loc[drift_idx, "recent_avg_satisfaction"] *= 0.3
+
+    # Simulate: escalation spike
     if "escalation_rate" in new_data.columns:
         new_data.loc[drift_idx, "escalation_rate"] = np.minimum(
-            new_data.loc[drift_idx, "escalation_rate"] + 0.4, 1.0
+            new_data.loc[drift_idx, "escalation_rate"] + 0.7, 1.0
         )
 
-    # Simulate: satisfaction drops
-    if "avg_satisfaction" in new_data.columns:
-        new_data.loc[drift_idx, "avg_satisfaction"] *= 0.5
+    # Simulate: MRR change ratio collapse (mass downgrades)
+    if "mrr_change_ratio" in new_data.columns:
+        new_data.loc[drift_idx, "mrr_change_ratio"] *= 0.2
+
+    # Simulate: frustration score spike
+    if "frustration_score" in new_data.columns:
+        new_data.loc[drift_idx, "frustration_score"] = np.minimum(
+            new_data.loc[drift_idx, "frustration_score"] + 0.6, 1.0
+        )
 
     return new_data
 
@@ -298,18 +314,11 @@ def run_drift_detection():
       4. Generate and save drift report
       5. Return the verdict for Phase 6 to act on
     """
-    # Load reference data
     reference_df = load_reference_data()
-
-    # Simulate new data with drift (in production, this would load real new data)
-    new_data = create_simulated_new_data(reference_df, drift_fraction=0.3)
-
-    # Run drift analysis
+    # drift_fraction=1.0 — all sampled rows show the shift
+    new_data = create_simulated_new_data(reference_df, drift_fraction=1.0)
     report = run_drift_analysis(reference_df, new_data)
-
-    # Save report
     save_drift_report(report)
-
     return report
 
 
