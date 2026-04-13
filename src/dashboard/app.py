@@ -6,7 +6,7 @@ Multi-page Streamlit dashboard for the MLOps churn prediction pipeline.
 Pages:
     1. Overview    — KPIs, risk distribution, charts
     2. Customers   — Browse and filter customers by risk
-    3. Predict     — Cascading filters to select customer, or enter custom data
+    3. Predict     — Select customer OR explore scenarios
     4. Model       — Experiment history, feature importance
     5. Drift       — Drift detection report
 
@@ -39,23 +39,22 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------------------------------------------------------------------------
-# Detect theme and set colors accordingly
-# ---------------------------------------------------------------------------
-
 COLORS = {
     "primary": "#6366F1",
-    "high": "#EF4444",
-    "medium": "#F59E0B",
-    "low": "#10B981",
-    "blue": "#6366F1",
-    "teal": "#14B8A6",
+    "high":    "#EF4444",
+    "medium":  "#F59E0B",
+    "low":     "#10B981",
+    "blue":    "#6366F1",
+    "teal":    "#14B8A6",
 }
-RISK_COLOR_MAP = {"high": COLORS["high"], "medium": COLORS["medium"], "low": COLORS["low"]}
-
+RISK_COLOR_MAP = {
+    "high":   COLORS["high"],
+    "medium": COLORS["medium"],
+    "low":    COLORS["low"],
+}
 
 # ---------------------------------------------------------------------------
-# Minimal CSS — works in both light and dark themes
+# CSS
 # ---------------------------------------------------------------------------
 
 st.markdown("""
@@ -68,38 +67,34 @@ st.markdown("""
         padding: 12px 16px;
     }
 
-    .risk-high {
-        background: rgba(239,68,68,0.15); color: #EF4444;
-        padding: 4px 14px; border-radius: 12px; font-weight: 600;
-        display: inline-block;
-    }
-    .risk-medium {
-        background: rgba(245,158,11,0.15); color: #F59E0B;
-        padding: 4px 14px; border-radius: 12px; font-weight: 600;
-        display: inline-block;
-    }
-    .risk-low {
-        background: rgba(16,185,129,0.15); color: #10B981;
-        padding: 4px 14px; border-radius: 12px; font-weight: 600;
-        display: inline-block;
-    }
+    .risk-high   { background:rgba(239,68,68,0.15);  color:#EF4444;
+                   padding:4px 14px; border-radius:12px; font-weight:600; display:inline-block; }
+    .risk-medium { background:rgba(245,158,11,0.15); color:#F59E0B;
+                   padding:4px 14px; border-radius:12px; font-weight:600; display:inline-block; }
+    .risk-low    { background:rgba(16,185,129,0.15); color:#10B981;
+                   padding:4px 14px; border-radius:12px; font-weight:600; display:inline-block; }
 
-    .detail-label {
-        font-size: 13px; opacity: 0.6; margin-bottom: 2px;
+    .detail-label { font-size:13px; opacity:0.6; margin-bottom:2px; }
+    .detail-value { font-size:16px; font-weight:500; }
+
+    .customer-card {
+        border: 1px solid rgba(128,128,128,0.2);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 8px;
     }
-    .detail-value {
-        font-size: 16px; font-weight: 500;
-    }
+    .card-name  { font-size:15px; font-weight:600; margin-bottom:4px; }
+    .card-label { font-size:12px; opacity:0.55; }
+    .card-value { font-size:14px; font-weight:500; margin-bottom:6px; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Plotly theme helper — transparent backgrounds, auto text color
+# Plotly helper
 # ---------------------------------------------------------------------------
 
 def chart_layout(height=320, **kwargs):
-    """Standard plotly layout that works in both light and dark mode."""
     base = dict(
         height=height,
         plot_bgcolor="rgba(0,0,0,0)",
@@ -110,23 +105,53 @@ def chart_layout(height=320, **kwargs):
     return base
 
 
+def gauge_chart(prob, risk):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=prob * 100,
+        number={"suffix": "%", "font": {"size": 28}},
+        gauge={
+            "axis": {"range": [0, 100], "tickfont": {"size": 10}},
+            "bar":  {"color": RISK_COLOR_MAP.get(risk, "#6B7280"), "thickness": 0.3},
+            "steps": [
+                {"range": [0,  40], "color": "rgba(16,185,129,0.12)"},
+                {"range": [40, 70], "color": "rgba(245,158,11,0.12)"},
+                {"range": [70,100], "color": "rgba(239,68,68,0.12)"},
+            ],
+            "threshold": {
+                "line":  {"color": RISK_COLOR_MAP.get(risk, "#6B7280"), "width": 3},
+                "thickness": 0.8,
+                "value": prob * 100,
+            },
+        },
+    ))
+    fig.update_layout(
+        height=200,
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=20, b=10, l=20, r=20),
+    )
+    return fig
+
+
 # ---------------------------------------------------------------------------
-# Model loading (cached across reruns)
+# Model loading
 # ---------------------------------------------------------------------------
 
 @st.cache_resource
 def load_model():
-    """Load production model from MLflow. Tries sklearn first, then xgboost."""
+    """
+    Load production model from MLflow.
+    Tries churn_predictor first (current name), falls back to churn_xgboost
+    (legacy name). Within each, tries sklearn then xgboost flavor.
+    """
     mlflow.set_tracking_uri(Config.MLFLOW_TRACKING_URI)
-    # FIX: updated registry name from churn_xgboost → churn_predictor
-    try:
-        return mlflow.sklearn.load_model("models:/churn_predictor/latest")
-    except Exception:
-        pass
-    try:
-        return mlflow.xgboost.load_model("models:/churn_predictor/latest")
-    except Exception:
-        return None
+    for registry_name in ["churn_predictor", "churn_xgboost"]:
+        for loader in [mlflow.sklearn.load_model, mlflow.xgboost.load_model]:
+            try:
+                return loader(f"models:/{registry_name}/latest")
+            except Exception:
+                continue
+    return None
 
 
 def get_feature_names(m):
@@ -138,7 +163,7 @@ def get_feature_names(m):
 
 
 # ---------------------------------------------------------------------------
-# Data loading (cached with TTL)
+# Data loading
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=300)
@@ -157,17 +182,17 @@ def load_accounts():
 def load_drift_report():
     path = Config.INTERIM_DATA_DIR / "drift_report.json"
     if path.exists():
-        with open(path, "r") as f:
+        with open(path) as f:
             return json.load(f)
     return None
 
 
 # ---------------------------------------------------------------------------
-# Scoring helpers
+# Prediction helpers
 # ---------------------------------------------------------------------------
 
 def align_features(df, m):
-    """Ensure DataFrame columns match model's expected features in correct order."""
+    """Reorder / fill columns to match model's expected feature set."""
     names = get_feature_names(m)
     if names is not None:
         for col in names:
@@ -178,203 +203,178 @@ def align_features(df, m):
 
 
 def score_all(m, features_df):
-    """Score all customers and return predictions DataFrame."""
     X = features_df.drop(columns=["account_id", "churn_flag"])
     X = align_features(X, m)
     probas = m.predict_proba(X)[:, 1]
-
     return pd.DataFrame({
-        "account_id": features_df["account_id"],
+        "account_id":       features_df["account_id"],
         "churn_probability": np.round(probas, 4),
-        "churn_prediction": (probas >= 0.5).astype(int),
-        "risk_level": pd.cut(probas, bins=[-0.01, 0.4, 0.7, 1.01],
-                             labels=["low", "medium", "high"]),
+        "churn_prediction":  (probas >= 0.5).astype(int),
+        "risk_level":        pd.cut(
+            probas,
+            bins=[-0.01, 0.4, 0.7, 1.01],
+            labels=["low", "medium", "high"],
+        ),
     })
 
 
 def predict_customer(m, features_df, account_id):
-    """Get prediction for one customer using their real feature data."""
     row = features_df[features_df["account_id"] == account_id]
     if row.empty:
         return None
-
     X = row.drop(columns=["account_id", "churn_flag"])
     X = align_features(X, m)
     prob = float(m.predict_proba(X)[0][1])
     risk = "high" if prob >= 0.7 else "medium" if prob >= 0.4 else "low"
-
     return {"probability": round(prob, 4), "prediction": int(prob >= 0.5), "risk": risk}
 
 
-def build_custom_features(model, features_df, inputs):
+# ---------------------------------------------------------------------------
+# Scenario Explorer helpers  (Tab 2)
+# ---------------------------------------------------------------------------
+
+# Maps plain-English levels to numeric targets used for nearest-neighbour search
+# Usage and ticket HARD RANGE filters — these are applied first
+# so the returned customers actually match the selected profile
+USAGE_RANGES = {
+    "Low (< 1900 mins)":       (0,    1922),
+    "Medium (1900–3100 mins)": (1922,  3118),
+    "High (> 3100 mins)":     (3118, 999999),
+}
+TICKET_RANGES = {
+    "Low (0–3 tickets)":  (0, 3),
+    "Medium (4–5 tickets)": (4, 5),
+    "High (> 6 tickets)": (6, 999),
+}
+USAGE_LABELS  = list(USAGE_RANGES.keys())
+TICKET_LABELS = list(TICKET_RANGES.keys())
+
+
+def find_matching_customers(features_df, accounts_df, plan, industry,
+                             usage_label, support_label, n=3):
     """
-    Build a feature vector for custom prediction.
+    Return the n real customers whose profile best matches the selected
+    plan, industry, usage level, and support load.
 
-    Strategy:
-      1. Start from the median of ONLY the features the model actually uses
-         (not all 68 — avoids feeding the model features it was never trained on).
-      2. Override every feature that can be derived from user inputs.
-      3. Only apply overrides that exist in the model's feature set so nothing
-         is silently ignored.
-
-    This ensures extreme inputs (e.g. 0 usage, 50 tickets) produce extreme
-    predictions rather than being diluted by unrelated median values.
+    Matching strategy (usage + tickets are HARD filters — always respected)
+    -----------------------------------------------------------------------
+    1. Hard filter on usage range AND ticket range — these are non-negotiable.
+       This guarantees returned customers actually match the selected profile.
+    2. Within that pool, prefer plan_tier + industry match.
+    3. If plan+industry yields < n rows, relax to plan only.
+    4. If still < n, use the full usage+ticket filtered pool.
+    5. Rank by churn probability descending so the most interesting
+       (highest risk) customers surface first.
     """
-    model_features = get_feature_names(model)
-    if model_features is None:
-        return None
+    u_min, u_max = USAGE_RANGES[usage_label]
+    t_min, t_max = TICKET_RANGES[support_label]
 
-    # Step 1 — baseline: median of model features only
-    feat_cols = features_df.drop(columns=["account_id", "churn_flag"])
-    available = [f for f in model_features if f in feat_cols.columns]
-    fd = feat_cols[available].median().to_dict()
+    # Attach account-level info
+    acct_cols = ["account_id", "account_name", "plan_tier",
+                 "industry", "seats", "country", "churn_flag"]
+    acct_subset = accounts_df[[c for c in acct_cols if c in accounts_df.columns]]
+    merged = features_df.merge(acct_subset, on="account_id", how="left",
+                                suffixes=("", "_acct"))
+    if "churn_flag_acct" in merged.columns:
+        merged = merged.drop(columns=["churn_flag_acct"])
 
-    # Ensure every model feature exists (fill any missing with 0)
-    for f in model_features:
-        if f not in fd:
-            fd[f] = 0.0
+    # ── Step 1: Hard filter on usage AND tickets (always applied) ────
+    usage_ticket_pool = merged[
+        (merged["total_usage_minutes"] >= u_min) &
+        (merged["total_usage_minutes"] <  u_max) &
+        (merged["ticket_count"]        >= t_min) &
+        (merged["ticket_count"]        <= t_max)
+    ].copy()
 
-    # Unpack inputs
-    seats        = inputs["seats"]
-    plan         = inputs["plan"]
-    tenure       = inputs["tenure"]
-    is_trial     = inputs["is_trial"]
-    avg_mrr      = inputs["avg_mrr"]
-    usage_mins   = inputs["usage_mins"]
-    features_used = inputs["features_used"]
-    error_rate   = inputs["error_rate"]
-    tickets      = inputs["tickets"]
-    satisfaction = inputs["satisfaction"]
-    escalation   = inputs["escalation"]
-    downgraded   = inputs["downgraded"]
+    # Fallback: if the hard filter returns nothing, widen ticket range slightly
+    if len(usage_ticket_pool) < n:
+        usage_ticket_pool = merged[
+            (merged["total_usage_minutes"] >= u_min) &
+            (merged["total_usage_minutes"] <  u_max)
+        ].copy()
 
-    plan_map = {"Basic": 0, "Pro": 1, "Enterprise": 2}
+    # Ultimate fallback: if still not enough, use whole dataset
+    if len(usage_ticket_pool) < n:
+        usage_ticket_pool = merged.copy()
 
-    # Derived values — computed once so they're consistent across all overrides
-    # Usage trend: ratio of recent (last 30 days) to older (first 60 days) usage
-    # Low usage → ratio well below 1.0 (disengagement signal)
-    if usage_mins < 100:
-        usage_trend = 0.15
-        days_since_usage = 90
-        recent_usage = usage_mins * 0.1
-    elif usage_mins < 400:
-        usage_trend = 0.40
-        days_since_usage = 30
-        recent_usage = usage_mins * 0.35
-    elif usage_mins < 1000:
-        usage_trend = 0.85
-        days_since_usage = 10
-        recent_usage = usage_mins * 0.70
+    # ── Step 2: Prefer plan + industry within the usage/ticket pool ──
+    strict = usage_ticket_pool[
+        (usage_ticket_pool["plan_tier"] == plan) &
+        (usage_ticket_pool["industry"]  == industry)
+    ]
+
+    if len(strict) >= n:
+        pool = strict.copy()
     else:
-        usage_trend = 1.30
-        days_since_usage = 3
-        recent_usage = usage_mins * 0.80
+        plan_only = usage_ticket_pool[usage_ticket_pool["plan_tier"] == plan]
+        pool = plan_only.copy() if len(plan_only) >= n else usage_ticket_pool.copy()
 
-    # Ticket trend: ratio of recent to older support volume
-    if tickets > 15:
-        ticket_trend = 4.0
-        days_since_ticket = 3
-    elif tickets > 8:
-        ticket_trend = 2.5
-        days_since_ticket = 7
-    elif tickets > 3:
-        ticket_trend = 1.2
-        days_since_ticket = 20
-    else:
-        ticket_trend = 0.5
-        days_since_ticket = 60
+    # ── Step 3: Score each candidate — predict churn probability ─────
+    scored_rows = []
+    for _, row in pool.iterrows():
+        pred = predict_customer(model, features_df, row["account_id"])
+        if pred:
+            row = row.copy()
+            row["_churn_prob"] = pred["probability"]
+            scored_rows.append(row)
 
-    # Revenue risk: high when MRR is LOW *and* usage is declining
-    # (1 - mrr_ratio) makes low MRR = high base risk
-    # (1 - usage_trend) capped at 0 makes declining usage multiply that risk
-    mrr_ratio = min(avg_mrr / 5000.0, 1.0)
-    revenue_risk = (1.0 - mrr_ratio) * max(0.0, 1.0 - usage_trend)
+    if not scored_rows:
+        return pd.DataFrame()
 
-    # Frustration: high when usage is LOW but tickets are HIGH
-    frustration = (1.0 - min(usage_mins / 10000.0, 1.0)) * min(tickets / 50.0, 1.0)
+    scored_df = pd.DataFrame(scored_rows)
 
-    # Step 2 — build the full override dictionary
-    overrides = {
-        # ── Account features ──────────────────────────────────────────────
-        "seats":               float(seats),
-        "plan_tier_encoded":   float(plan_map[plan]),
-        "tenure_days":         float(tenure),
-        "is_trial":            1.0 if is_trial == "Yes" else 0.0,
-        "is_new_customer":     1.0 if tenure <= 90  else 0.0,
-        "is_established":      1.0 if tenure >= 365 else 0.0,
+    # ── Step 4: Sort by churn probability descending ─────────────────
+    # High-risk customers surface first — more informative for the user
+    return scored_df.nlargest(n, "_churn_prob").reset_index(drop=True)
 
-        # ── Subscription features ─────────────────────────────────────────
-        "avg_mrr":             float(avg_mrr),
-        "max_mrr":             float(avg_mrr * 1.2),
-        "total_arr":           float(avg_mrr * 12),
-        "avg_seats_per_sub":   float(seats),
-        "has_upgrade":         0.0,
-        "has_downgrade":       1.0 if downgraded == "Yes" else 0.0,
-        "recent_has_downgrade":1.0 if downgraded == "Yes" else 0.0,
-        "recent_has_upgrade":  0.0,
-        # mrr_change_ratio: recent MRR / older MRR — downgrade = drop in ratio
-        "mrr_change_ratio":    0.35 if downgraded == "Yes" else 1.05,
-        "auto_renew_ratio":    0.15 if downgraded == "Yes" else 0.90,
-        "sub_velocity":        0.05 if downgraded == "Yes" else 0.30,
-        "trial_ratio":         1.0  if is_trial == "Yes" else 0.0,
-        "is_monthly_billing":  1.0  if plan == "Basic" else 0.0,
-        "latest_plan_tier":    float(plan_map[plan]),
-        "days_since_last_sub": 30.0 if downgraded == "Yes" else 5.0,
-        "active_subscriptions":0.0  if downgraded == "Yes" else 1.0,
 
-        # ── Usage features ────────────────────────────────────────────────
-        "total_usage_minutes":    float(usage_mins),
-        "avg_daily_usage_mins":   float(usage_mins / 90.0),
-        "total_usage_events":     float(max(usage_mins / 15.0, 0)),
-        "avg_usage_count":        float(usage_mins / 90.0),
-        "unique_features_used":   float(features_used),
-        "error_rate":             float(error_rate),
-        "total_errors":           float(error_rate * max(usage_mins / 10.0, 1)),
-        "beta_feature_ratio":     0.05,
-        "recent_usage_minutes":   float(recent_usage),
-        "recent_usage_events":    float(max(recent_usage / 15.0, 0)),
-        "recent_error_rate":      float(min(error_rate * 1.5, 1.0) if error_rate > 0.1 else error_rate),
-        "recent_avg_daily_mins":  float(recent_usage / 30.0),
-        "recent_features_used":   float(features_used * 0.7 if usage_trend < 0.5 else features_used),
-        "usage_trend_ratio":      float(usage_trend),
-        "feature_diversity_trend":0.4 if features_used < 5 else 1.0,
-        "days_since_last_usage":  float(days_since_usage),
+def render_customer_card(col, row, pred, rank):
+    """Render one customer card inside a Streamlit column."""
+    risk  = pred["risk"]
+    prob  = pred["probability"]
 
-        # ── Support features ──────────────────────────────────────────────
-        "ticket_count":               float(tickets),
-        "avg_resolution_hours":       72.0 if satisfaction < 2.0 else (36.0 if satisfaction < 3.5 else 10.0),
-        "avg_first_response_mins":    300.0 if satisfaction < 2.0 else 60.0,
-        "avg_satisfaction":           float(satisfaction),
-        "escalation_count":           float(escalation * tickets),
-        "escalation_rate":            float(escalation),
-        "high_priority_ratio":        0.85 if escalation > 0.5 else 0.15,
-        "unresolved_tickets":         float(tickets * (0.65 if satisfaction < 2.5 else 0.08)),
-        "unresolved_ratio":           0.65 if satisfaction < 2.5 else 0.08,
-        "recent_ticket_count":        float(tickets * 0.85),
-        "recent_avg_resolution_hours":72.0 if satisfaction < 2.0 else 10.0,
-        "recent_avg_satisfaction":    float(satisfaction),
-        "recent_escalation_rate":     float(escalation),
-        "ticket_trend_ratio":         float(ticket_trend),
-        "days_since_last_ticket":     float(days_since_ticket),
+    with col:
+        # Header
+        st.markdown(
+            f"<div class='card-name'>#{rank} — {row.get('account_name', 'Unknown')}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<span class='risk-{risk}'>{risk.upper()}</span>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
 
-        # ── Interaction / derived features ────────────────────────────────
-        "frustration_score":      float(frustration),
-        "revenue_risk_score":     float(revenue_risk),
-        "tickets_per_tenure_day": float(tickets / max(tenure, 1)),
-        "usage_per_seat":         float(usage_mins / max(seats, 1)),
-    }
+        # Key metrics
+        m1, m2 = st.columns(2)
+        m1.metric("Churn Prob",  f"{prob:.1%}")
+        m2.metric("Tenure",      f"{int(row.get('tenure_days', 0))} days")
 
-    # Step 3 — apply overrides only for features the model actually uses
-    for key, value in overrides.items():
-        if key in fd:
-            fd[key] = float(value)
+        m3, m4 = st.columns(2)
+        m3.metric("Avg MRR",     f"${row.get('avg_mrr', 0):,.0f}")
+        m4.metric("Tickets",     f"{int(row.get('ticket_count', 0))}")
 
-    # Step 4 — zero out all one-hot columns (industry / referral)
-    for col in list(fd.keys()):
-        if col.startswith("industry_") or col.startswith("referral_"):
-            fd[col] = 0.0
+        m5, m6 = st.columns(2)
+        m5.metric("Usage (mins)", f"{row.get('total_usage_minutes', 0):,.0f}")
+        m6.metric("Satisfaction", f"{row.get('avg_satisfaction', 0):.1f} / 5")
 
-    return fd
+        # Gauge
+        st.plotly_chart(gauge_chart(prob, risk), use_container_width=True)
+
+        # Ground truth badge
+        churned = bool(row.get("churn_flag", 0))
+        if churned:
+            st.error("📌 Actually churned in dataset")
+        else:
+            st.success("📌 Did not churn in dataset")
+
+        # Plan / industry info
+        st.caption(
+            f"Plan: {row.get('plan_tier','–')}  ·  "
+            f"Industry: {row.get('industry','–')}  ·  "
+            f"Seats: {int(row.get('seats', 0))}  ·  "
+            f"Country: {row.get('country','–')}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -383,17 +383,19 @@ def build_custom_features(model, features_df, inputs):
 
 st.sidebar.markdown("### 📊 Churn Dashboard")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("Navigation",
-                         ["Overview", "Customers", "Predict", "Model", "Drift"],
-                         label_visibility="collapsed")
+page = st.sidebar.radio(
+    "Navigation",
+    ["Overview", "Customers", "Predict", "Model", "Drift"],
+    label_visibility="collapsed",
+)
 st.sidebar.markdown("---")
 st.sidebar.caption("SaaS Churn MLOps Pipeline\nRavenStack Dataset")
 
 # ---------------------------------------------------------------------------
-# Load data
+# Load shared data
 # ---------------------------------------------------------------------------
 
-model = load_model()
+model       = load_model()
 features_df = load_features()
 accounts_df = load_accounts()
 
@@ -407,21 +409,19 @@ if page == "Overview":
     st.caption("Real-time snapshot of model performance and customer risk distribution.")
 
     if model is None:
-        st.error("Model not loaded. Start MLflow server on port 5000.")
+        st.error("Model not loaded. Start MLflow server:  mlflow server --host 127.0.0.1 --port 5000 --backend-store-uri sqlite:///mlflow.db")
         st.stop()
 
     predictions = score_all(model, features_df)
     merged = accounts_df.merge(predictions, on="account_id", how="left")
 
-    # KPIs
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Customers", len(merged))
-    c2.metric("High Risk", int((merged["risk_level"] == "high").sum()))
-    c3.metric("Medium Risk", int((merged["risk_level"] == "medium").sum()))
-    c4.metric("Actual Churn Rate", f"{merged['churn_flag'].mean() * 100:.1f}%")
+    c1.metric("Total Customers",  len(merged))
+    c2.metric("High Risk",        int((merged["risk_level"] == "high").sum()))
+    c3.metric("Medium Risk",      int((merged["risk_level"] == "medium").sum()))
+    c4.metric("Actual Churn Rate",f"{merged['churn_flag'].mean() * 100:.1f}%")
 
     st.markdown("---")
-
     ch1, ch2 = st.columns(2)
 
     with ch1:
@@ -442,7 +442,6 @@ if page == "Overview":
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
-
     st.markdown("#### Risk by Industry")
     ir = merged.groupby(["industry", "risk_level"]).size().reset_index(name="count")
     fig = px.bar(ir, x="industry", y="count", color="risk_level",
@@ -466,8 +465,8 @@ elif page == "Customers":
     predictions = score_all(model, features_df)
     merged = accounts_df.merge(predictions, on="account_id", how="left")
     merged = merged.merge(
-        features_df[["account_id", "tenure_days", "avg_mrr", "ticket_count",
-                      "total_usage_minutes"]],
+        features_df[["account_id", "tenure_days", "avg_mrr",
+                     "ticket_count", "total_usage_minutes"]],
         on="account_id", how="left",
     )
 
@@ -484,7 +483,7 @@ elif page == "Customers":
 
     filtered = merged[
         (merged["risk_level"].isin(risk_f)) &
-        (merged["industry"].isin(ind_f)) &
+        (merged["industry"].isin(ind_f))   &
         (merged["plan_tier"].isin(plan_f))
     ].sort_values("churn_probability", ascending=False)
 
@@ -514,42 +513,50 @@ elif page == "Predict":
         st.error("Model not loaded.")
         st.stop()
 
-    tab1, tab2 = st.tabs(["🔍 Select Customer", "✏️ Custom Prediction"])
+    tab1, tab2 = st.tabs(["🔍 Select Customer", "🧪 Scenario Explorer"])
 
-    # ----- Tab 1: Select existing customer with cascading filters -----
+    # ───────────────────────────────────────────────────────────────────
+    # TAB 1 — Select a real customer by cascading filters
+    # ───────────────────────────────────────────────────────────────────
     with tab1:
         st.markdown("##### Filter and select a customer")
 
         sel1, sel2, sel3 = st.columns(3)
-
         with sel1:
-            plan_options = sorted(accounts_df["plan_tier"].unique())
-            sel_plan = st.selectbox("Plan Tier", plan_options, key="pred_plan")
+            sel_plan = st.selectbox("Plan Tier",
+                                    sorted(accounts_df["plan_tier"].unique()),
+                                    key="pred_plan")
 
         filtered_by_plan = accounts_df[accounts_df["plan_tier"] == sel_plan]
 
         with sel2:
-            ind_options = sorted(filtered_by_plan["industry"].unique())
-            sel_industry = st.selectbox("Industry", ind_options, key="pred_ind")
+            sel_industry = st.selectbox("Industry",
+                                        sorted(filtered_by_plan["industry"].unique()),
+                                        key="pred_ind")
 
-        filtered_by_ind = filtered_by_plan[filtered_by_plan["industry"] == sel_industry]
+        filtered_by_ind = filtered_by_plan[
+            filtered_by_plan["industry"] == sel_industry
+        ]
 
         with sel3:
-            cust_options = filtered_by_ind[["account_id", "account_name"]].copy()
-            cust_options["label"] = cust_options["account_name"] + " (" + cust_options["account_id"] + ")"
-            sel_customer = st.selectbox("Customer", cust_options["label"].tolist(), key="pred_cust")
+            cust_opts = filtered_by_ind[["account_id", "account_name"]].copy()
+            cust_opts["label"] = (cust_opts["account_name"]
+                                  + " (" + cust_opts["account_id"] + ")")
+            sel_customer = st.selectbox("Customer",
+                                        cust_opts["label"].tolist(),
+                                        key="pred_cust")
 
-        selected_id = cust_options[cust_options["label"] == sel_customer]["account_id"].iloc[0]
+        selected_id = cust_opts[
+            cust_opts["label"] == sel_customer
+        ]["account_id"].iloc[0]
 
         if st.button("Get Prediction", type="primary", key="btn_predict"):
-            result = predict_customer(model, features_df, selected_id)
-            cust_info = accounts_df[accounts_df["account_id"] == selected_id].iloc[0]
-            cust_features = features_df[features_df["account_id"] == selected_id].iloc[0]
+            result       = predict_customer(model, features_df, selected_id)
+            cust_info    = accounts_df[accounts_df["account_id"] == selected_id].iloc[0]
+            cust_feats   = features_df[features_df["account_id"] == selected_id].iloc[0]
 
-            if result is not None:
+            if result:
                 st.markdown("---")
-
-                # Customer details card
                 st.markdown("##### Customer Profile")
                 d1, d2, d3, d4, d5 = st.columns(5)
                 d1.markdown(f"<div class='detail-label'>Company</div>"
@@ -569,161 +576,210 @@ elif page == "Predict":
                             unsafe_allow_html=True)
 
                 st.markdown("")
-
-                # Key metrics row
                 k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Tenure", f"{int(cust_features.get('tenure_days', 0))} days")
-                k2.metric("Avg MRR", f"${cust_features.get('avg_mrr', 0):,.0f}")
-                k3.metric("Tickets", f"{int(cust_features.get('ticket_count', 0))}")
-                k4.metric("Usage", f"{cust_features.get('total_usage_minutes', 0):,.0f} mins")
+                k1.metric("Tenure",     f"{int(cust_feats.get('tenure_days', 0))} days")
+                k2.metric("Avg MRR",    f"${cust_feats.get('avg_mrr', 0):,.0f}")
+                k3.metric("Tickets",    f"{int(cust_feats.get('ticket_count', 0))}")
+                k4.metric("Usage",      f"{cust_feats.get('total_usage_minutes', 0):,.0f} mins")
 
                 st.markdown("---")
-
-                # Prediction result
                 st.markdown("##### Prediction Result")
                 r1, r2, r3 = st.columns(3)
                 r1.metric("Churn Probability", f"{result['probability']:.1%}")
                 r2.metric("Prediction",
                           "Will Churn" if result["prediction"] == 1 else "Will Stay")
+                risk_level = result["risk"]
                 r3.markdown(
-                    f"**Risk Level**<br><span class='risk-{result['risk']}'>"
-                    f"{result['risk'].upper()}</span>",
+                    f"**Risk Level**<br>"
+                    f"<span class='risk-{risk_level}'>"
+                    f"{risk_level.upper()}</span>",
                     unsafe_allow_html=True,
                 )
 
-                # Gauge chart
-                fig = go.Figure(go.Indicator(
-                    mode="gauge+number", value=result["probability"] * 100,
-                    number={"suffix": "%"},
-                    gauge={
-                        "axis": {"range": [0, 100]},
-                        "bar": {"color": RISK_COLOR_MAP.get(result["risk"], "#6B7280")},
-                        "steps": [
-                            {"range": [0, 40], "color": "rgba(16,185,129,0.15)"},
-                            {"range": [40, 70], "color": "rgba(245,158,11,0.15)"},
-                            {"range": [70, 100], "color": "rgba(239,68,68,0.15)"},
-                        ],
-                    },
-                ))
-                fig.update_layout(height=250, paper_bgcolor="rgba(0,0,0,0)",
-                                  margin=dict(t=30, b=10, l=30, r=30))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(
+                    gauge_chart(result["probability"], result["risk"]),
+                    use_container_width=True,
+                )
 
-                # Actual churn status (ground truth from dataset — for evaluation only)
-                actually_churned = bool(cust_info["churn_flag"])
-                if actually_churned:
+                # Ground truth — for evaluation only
+                if bool(cust_info["churn_flag"]):
                     st.info("📌 **Ground truth (dataset):** This customer actually churned — for evaluation only.")
                 else:
                     st.info("📌 **Ground truth (dataset):** This customer did not churn — for evaluation only.")
 
-                # Expandable feature details
                 with st.expander("View all feature values"):
-                    feat_data = cust_features.drop(["account_id", "churn_flag"])
-                    non_zero = feat_data[feat_data != 0].sort_values(ascending=False)
+                    feat_data = cust_feats.drop(["account_id", "churn_flag"])
+                    non_zero  = feat_data[feat_data != 0].sort_values(ascending=False)
                     st.dataframe(
-                        non_zero.reset_index().rename(columns={"index": "Feature", 0: "Value"}),
+                        non_zero.reset_index().rename(
+                            columns={"index": "Feature", 0: "Value"}
+                        ),
                         use_container_width=True,
                     )
 
-    # ----- Tab 2: Custom data entry -----
+    # ───────────────────────────────────────────────────────────────────
+    # TAB 2 — SCENARIO EXPLORER
+    # ───────────────────────────────────────────────────────────────────
     with tab2:
-        st.markdown("##### Simulate a hypothetical customer")
+        st.markdown("##### Explore customer profiles by scenario")
         st.caption(
-            "Adjust the sliders to describe a customer profile. "
-            "All signals — usage, tickets, MRR trend, satisfaction — feed into the prediction together."
+            "Pick a customer profile using the dropdowns below. "
+            "The system finds the 3 real customers in the dataset "
+            "whose usage and support patterns best match your description "
+            "and predicts their churn risk using actual feature data — "
+            "no synthetic reconstruction involved."
         )
 
-        with st.form("custom_predict"):
-            p1, p2, p3 = st.columns(3)
+        st.markdown("---")
 
-            with p1:
-                st.markdown("**Account**")
-                seats = st.slider("Seats", 1, 100, 10)
-                plan = st.selectbox("Plan", ["Basic", "Pro", "Enterprise"], key="cp_plan")
-                tenure = st.slider("Tenure (days)", 1, 730, 180)
-                is_trial = st.selectbox("Trial?", ["No", "Yes"], key="cp_trial")
+        # ── Profile selectors ────────────────────────────────────────
+        s1, s2, s3, s4 = st.columns(4)
 
-            with p2:
-                st.markdown("**Usage & Revenue**")
-                avg_mrr = st.slider("Avg MRR ($)", 0, 5000, 800)
-                usage_mins = st.slider("Total Usage (minutes)", 0, 10000, 1500)
-                features_used = st.slider("Unique Features Used", 0, 40, 12)
-                error_rate = st.slider("Error Rate", 0.0, 0.5, 0.03, 0.01)
-
-            with p3:
-                st.markdown("**Support & Health**")
-                tickets = st.slider("Support Tickets", 0, 50, 4)
-                satisfaction = st.slider("Avg Satisfaction (1–5)", 1.0, 5.0, 3.5, 0.1)
-                escalation = st.slider("Escalation Rate", 0.0, 1.0, 0.1, 0.05)
-                downgraded = st.selectbox("Downgraded?", ["No", "Yes"], key="cp_dg")
-
-            submitted = st.form_submit_button("Predict Churn Risk", type="primary",
-                                              use_container_width=True)
-
-        if submitted:
-            inputs = dict(
-                seats=seats, plan=plan, tenure=tenure, is_trial=is_trial,
-                avg_mrr=avg_mrr, usage_mins=usage_mins, features_used=features_used,
-                error_rate=error_rate, tickets=tickets, satisfaction=satisfaction,
-                escalation=escalation, downgraded=downgraded,
+        with s1:
+            sc_plan = st.selectbox(
+                "Plan Tier",
+                sorted(accounts_df["plan_tier"].unique()),
+                key="sc_plan",
             )
 
-            fd = build_custom_features(model, features_df, inputs)
+        with s2:
+            sc_industry = st.selectbox(
+                "Industry",
+                sorted(accounts_df["industry"].unique()),
+                key="sc_industry",
+            )
 
-            if fd is None:
-                st.error("Could not determine model features. Is the model loaded correctly?")
+        with s3:
+            sc_usage = st.selectbox(
+                "Usage Level",
+                USAGE_LABELS,
+                index=1,
+                key="sc_usage",
+                help="Total product usage in minutes over the observation period",
+            )
+
+        with s4:
+            sc_support = st.selectbox(
+                "Support Load",
+                TICKET_LABELS,
+                index=1,
+                key="sc_support",
+                help="Volume of support tickets raised",
+            )
+
+        st.markdown("")
+        run_btn = st.button(
+            "🔍 Find Matching Customers",
+            type="primary",
+            use_container_width=True,
+            key="sc_run",
+        )
+
+        if run_btn:
+            matches = find_matching_customers(
+                features_df, accounts_df,
+                sc_plan, sc_industry, sc_usage, sc_support,
+                n=3,
+            )
+
+            if matches.empty:
+                st.warning("No customers found. Try a different combination.")
                 st.stop()
 
-            df = pd.DataFrame([fd])
-            df = align_features(df, model)
-
-            prob = float(model.predict_proba(df)[0][1])
-            risk = "high" if prob >= 0.7 else "medium" if prob >= 0.4 else "low"
+            # ── How many rows actually matched the strict filter ──────
+            strict_count = len(
+                features_df.merge(
+                    accounts_df[accounts_df["plan_tier"] == sc_plan]
+                              [accounts_df["industry"]  == sc_industry],
+                    on="account_id", how="inner",
+                )
+            )
 
             st.markdown("---")
-            st.markdown("##### Prediction Result")
+            if strict_count >= 3:
+                st.markdown(
+                    f"**Showing top 3 matches** — "
+                    f"{sc_plan} plan · {sc_industry} industry · "
+                    f"{sc_usage} · {sc_support}"
+                )
+            else:
+                st.info(
+                    f"Fewer than 3 exact matches for **{sc_plan} / {sc_industry}**. "
+                    f"Showing closest profiles from similar plan tiers."
+                )
 
-            r1, r2, r3 = st.columns(3)
-            r1.metric("Churn Probability", f"{prob:.1%}")
-            r2.metric("Prediction", "Will Churn" if prob >= 0.5 else "Will Stay")
-            r3.markdown(f"**Risk Level**<br><span class='risk-{risk}'>{risk.upper()}</span>",
-                        unsafe_allow_html=True)
+            # ── Predict for each match ────────────────────────────────
+            results = []
+            for _, row in matches.iterrows():
+                pred = predict_customer(model, features_df, row["account_id"])
+                if pred:
+                    results.append((row, pred))
 
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number", value=prob * 100,
-                number={"suffix": "%"},
-                gauge={
-                    "axis": {"range": [0, 100]},
-                    "bar": {"color": RISK_COLOR_MAP.get(risk, "#6B7280")},
-                    "steps": [
-                        {"range": [0, 40], "color": "rgba(16,185,129,0.15)"},
-                        {"range": [40, 70], "color": "rgba(245,158,11,0.15)"},
-                        {"range": [70, 100], "color": "rgba(239,68,68,0.15)"},
-                    ],
-                },
-            ))
-            fig.update_layout(height=250, paper_bgcolor="rgba(0,0,0,0)",
-                              margin=dict(t=30, b=10, l=30, r=30))
-            st.plotly_chart(fig, use_container_width=True)
+            if not results:
+                st.error("Could not generate predictions for matched customers.")
+                st.stop()
 
-            # Show key signals so the user understands what drove the prediction
-            with st.expander("Key signals sent to model"):
-                model_features = get_feature_names(model)
-                signal_features = [
-                    "usage_trend_ratio", "ticket_trend_ratio", "frustration_score",
-                    "revenue_risk_score", "escalation_rate", "avg_satisfaction",
-                    "mrr_change_ratio", "unresolved_ratio", "days_since_last_usage",
-                    "auto_renew_ratio", "ticket_count", "avg_mrr",
-                ]
-                visible = {k: round(fd[k], 4) for k in signal_features if k in fd}
-                sig_df = pd.DataFrame(
-                    visible.items(), columns=["Feature", "Value"]
-                ).sort_values("Value", ascending=False)
-                st.dataframe(sig_df, use_container_width=True, hide_index=True)
-                st.caption(
-                    f"Model uses {len(model_features)} features total. "
-                    f"{sum(1 for f in model_features if f in fd and fd[f] != features_df[f].median() if f in features_df.columns)} "
-                    f"were overridden from median based on your inputs."
+            # ── Render 3 cards side by side ───────────────────────────
+            cols = st.columns(len(results))
+            for i, (row, pred) in enumerate(results):
+                render_customer_card(cols[i], row, pred, i + 1)
+
+            # ── Comparison table ──────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### Side-by-side comparison")
+
+            comparison_rows = []
+            for row, pred in results:
+                comparison_rows.append({
+                    "Customer":        row.get("account_name", "—"),
+                    "Plan":            row.get("plan_tier", "—"),
+                    "Industry":        row.get("industry", "—"),
+                    "Churn Prob":      f"{pred['probability']:.1%}",
+                    "Risk":            pred["risk"].upper(),
+                    "Tenure (days)":   int(row.get("tenure_days", 0)),
+                    "Avg MRR ($)":     f"{row.get('avg_mrr', 0):,.0f}",
+                    "Usage (mins)":    f"{row.get('total_usage_minutes', 0):,.0f}",
+                    "Tickets":         int(row.get("ticket_count", 0)),
+                    "Satisfaction":    f"{row.get('avg_satisfaction', 0):.1f}",
+                    "Escalation Rate": f"{row.get('escalation_rate', 0):.0%}",
+                    "Actually Churned":("Yes" if bool(row.get("churn_flag", 0))
+                                        else "No"),
+                })
+
+            comp_df = pd.DataFrame(comparison_rows).set_index("Customer")
+            st.dataframe(comp_df, use_container_width=True)
+
+            # ── Insight summary ───────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### What this tells you")
+
+            high_count = sum(1 for _, p in results if p["risk"] == "high")
+            avg_prob   = np.mean([p["probability"] for _, p in results])
+            churned_count = sum(
+                1 for r, _ in results if bool(r.get("churn_flag", 0))
+            )
+
+            ins1, ins2, ins3 = st.columns(3)
+            ins1.metric("Avg Churn Probability", f"{avg_prob:.1%}")
+            ins2.metric("High Risk Customers",   f"{high_count} of {len(results)}")
+            ins3.metric("Actually Churned",       f"{churned_count} of {len(results)}")
+
+            if avg_prob >= 0.6:
+                st.error(
+                    "⚠️ This customer profile is **high risk**. "
+                    "Customers with this combination of plan, industry, "
+                    "usage pattern, and support load have a high likelihood of churning. "
+                    "Proactive outreach is recommended."
+                )
+            elif avg_prob >= 0.35:
+                st.warning(
+                    "🟡 This profile shows **moderate churn risk**. "
+                    "Monitor these customers closely and consider targeted retention actions."
+                )
+            else:
+                st.success(
+                    "✅ This profile shows **low churn risk**. "
+                    "Customers matching this description tend to stay engaged."
                 )
 
 
@@ -737,11 +793,11 @@ elif page == "Model":
 
     st.markdown("#### Improvement Journey")
     journey = pd.DataFrame({
-        "Version": ["v1 Baseline", "v2 Time-windowed", "v3 Optimized"],
-        "AUC-ROC": [0.5303, 0.5385, 0.6352],
+        "Version":   ["v1 Baseline", "v2 Time-windowed", "v3 Optimized"],
+        "AUC-ROC":   [0.5303, 0.5385, 0.6352],
         "Precision": [0.2000, 0.2727, 0.5000],
-        "Recall": [0.1364, 0.1364, 0.4091],
-        "F1 Score": [0.1622, 0.1818, 0.4500],
+        "Recall":    [0.1364, 0.1364, 0.4091],
+        "F1 Score":  [0.1622, 0.1818, 0.4500],
         "Changes": [
             "All-time features, default XGBoost",
             "90-day windows, trend features, regularization",
@@ -768,33 +824,27 @@ elif page == "Model":
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
-
     st.markdown("#### Current Model (v3 — Random Forest)")
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("AUC-ROC", "0.6352")
+    m1.metric("AUC-ROC",   "0.6352")
     m2.metric("Precision", "0.5000")
-    m3.metric("Recall", "0.4091")
-    m4.metric("F1 Score", "0.4500")
+    m3.metric("Recall",    "0.4091")
+    m4.metric("F1 Score",  "0.4500")
     m5.metric("Threshold", "0.4758")
 
     st.markdown("---")
-
     st.markdown("#### Top Features by Importance")
     if model is not None:
         try:
-            if hasattr(model, "feature_importances_"):
-                imp = model.feature_importances_
-            elif hasattr(model, "coef_"):
-                imp = np.abs(model.coef_[0])
-            else:
-                imp = None
-
+            imp   = (model.feature_importances_
+                     if hasattr(model, "feature_importances_")
+                     else np.abs(model.coef_[0])
+                     if hasattr(model, "coef_") else None)
             names = get_feature_names(model)
-
             if imp is not None and names is not None:
-                fi = pd.DataFrame({"Feature": names, "Importance": imp})
-                fi = fi.sort_values("Importance", ascending=True).tail(15)
-
+                fi = (pd.DataFrame({"Feature": names, "Importance": imp})
+                        .sort_values("Importance", ascending=True)
+                        .tail(15))
                 fig = px.bar(fi, x="Importance", y="Feature", orientation="h",
                              color_discrete_sequence=[COLORS["blue"]])
                 fig.update_layout(**chart_layout(420), yaxis_title="")
@@ -818,12 +868,14 @@ elif page == "Drift":
     if report is not None:
         verdict = report["verdict"]
         cfg = {
-            "no_drift": ("✅", "No significant drift. Model is stable.", "success"),
-            "moderate_drift": ("⚠️", "Moderate drift. Monitor closely.", "warning"),
-            "significant_drift": ("🔴", "Significant drift. Retraining recommended.", "error"),
+            "no_drift":         ("✅", "No significant drift. Model is stable.",          "success"),
+            "moderate_drift":   ("⚠️", "Moderate drift detected. Monitor closely.",       "warning"),
+            "significant_drift":("🔴", "Significant drift. Retraining recommended.",       "error"),
         }
         icon, msg, alert = cfg.get(verdict, ("ℹ️", "", "info"))
-        getattr(st, alert)(f"{icon} **{verdict.replace('_', ' ').title()}** — {msg}")
+        getattr(st, alert)(
+            f"{icon} **{verdict.replace('_', ' ').title()}** — {msg}"
+        )
 
         d1, d2, d3 = st.columns(3)
         d1.metric("Features Tested", report["total_features_tested"])
@@ -835,24 +887,28 @@ elif page == "Drift":
         if report["drifted_features"]:
             st.markdown("#### Drifted Features")
             drifted = [{
-                "Feature": f,
-                "Test": report["feature_details"][f].get("test", ""),
+                "Feature":   f,
+                "Test":      report["feature_details"][f].get("test", ""),
                 "Statistic": round(report["feature_details"][f].get("statistic", 0), 4),
-                "P-Value": round(report["feature_details"][f].get("p_value", 0), 6),
+                "P-Value":   round(report["feature_details"][f].get("p_value", 0), 6),
             } for f in report["drifted_features"]]
-            st.dataframe(pd.DataFrame(drifted).sort_values("P-Value"),
-                         use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(drifted).sort_values("P-Value"),
+                use_container_width=True, hide_index=True,
+            )
 
         with st.expander("View all feature details"):
             all_f = [{
-                "Feature": f,
-                "Test": d.get("test", ""),
+                "Feature":   f,
+                "Test":      d.get("test", ""),
                 "Statistic": round(d.get("statistic", 0), 4),
-                "P-Value": round(d.get("p_value", 0), 6),
-                "Drifted": "Yes" if d.get("drift_detected") else "No",
+                "P-Value":   round(d.get("p_value", 0), 6),
+                "Drifted":   "Yes" if d.get("drift_detected") else "No",
             } for f, d in report["feature_details"].items()]
-            st.dataframe(pd.DataFrame(all_f).sort_values("P-Value"),
-                         use_container_width=True, height=400, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(all_f).sort_values("P-Value"),
+                use_container_width=True, height=400, hide_index=True,
+            )
 
         st.caption(f"Report generated: {report['timestamp']}")
 
