@@ -24,17 +24,10 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from src.utils.config import Config
+from contextlib import asynccontextmanager
 
 
-# ---------------------------------------------------------------------------
-# App initialization
-# ---------------------------------------------------------------------------
 
-app = FastAPI(
-    title="Churn Prediction API",
-    description="Predict customer churn probability using the production ML model",
-    version="3.0.0",
-)
 
 # Loaded once at startup, reused across all requests
 model = None
@@ -88,12 +81,24 @@ def load_model():
     return native_model, feature_names
 
 
-@app.on_event("startup")
-def startup_event():
-    """Load model into memory when the API server starts."""
+# ---------------------------------------------------------------------------
+# App initialization
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load model into memory on startup, clean up on shutdown."""
     global model, model_feature_names
     model, model_feature_names = load_model()
+    yield 
 
+    
+app = FastAPI(
+    title="Churn Prediction API",
+    description="Predict customer churn probability using the production ML model",
+    version="3.0.0",
+    lifespan=lifespan,
+)
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
