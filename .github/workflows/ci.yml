@@ -1,0 +1,112 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: saas_churn
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: Hrithiksd@18
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest httpx
+
+      - name: Create .env file
+        run: |
+          cat > .env << EOF
+          DB_HOST=localhost
+          DB_PORT=5432
+          DB_NAME=saas_churn
+          DB_USER=postgres
+          DB_PASSWORD=Hrithiksd@18
+          MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+          EOF
+
+      - name: Create required data directories
+        run: |
+          mkdir -p data/raw
+          mkdir -p data/processed
+          mkdir -p data/interim
+          mkdir -p models
+
+      - name: Copy raw CSV files
+        run: |
+          cp data/raw/*.csv data/raw/ 2>/dev/null || true
+
+      - name: Run data ingestion
+        run: |
+          python -m src.data_ingestion.load_data
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run feature engineering
+        run: |
+          python -m src.feature_engineering.build_features
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Start MLflow server
+        run: |
+          mlflow server \
+            --host 127.0.0.1 \
+            --port 5000 \
+            --backend-store-uri sqlite:///mlflow.db &
+          sleep 5
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run model training
+        run: |
+          python -m src.training.train
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run drift detection
+        run: |
+          python -m src.drift_detection.detect_drift
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run unit tests
+        run: |
+          pytest tests/ -v --tb=short
+        env:
+          PYTHONPATH: ${{ github.workspace }}
